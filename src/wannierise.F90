@@ -1897,11 +1897,11 @@ contains
 
           call comms_allreduce(wann_spread%om_nu,1,'SUM')
 
+          wann_spread%om_nu = wann_spread%om_nu / real(num_kpts,dp)
+
           do n=1, sel_loc_num
             wann_spread%om_nu = wann_spread%om_nu + lambdai * sum(ccentres_cart(n,:)**2)
           end do
-
-          wann_spread%om_nu = wann_spread%om_nu / real(num_kpts,dp)
 
        end if
 
@@ -2098,8 +2098,8 @@ contains
                               - ( crt(m,n) * ln_tmp_loc(n,nn,nkp_loc)  &
                               + conjg( crt(n,m) * ln_tmp_loc(m,nn,nkp_loc) ) ) &
                               * cmplx(0.0_dp,-0.5_dp,kind=dp)
-                         cdodq_loc(m,n,nkp_loc) = cdodq_loc(m,n,nkp_loc) &
-                              - ( crt(m,n) * rnkb_loc(n,nn,nkp_loc) + conjg(crt(n,m) &
+                         cdodq_loc(m,n,nkp_loc) = cdodq_loc(m,n,nkp_loc) - wb(nn) &
+                              * ( crt(m,n) * rnkb_loc(n,nn,nkp_loc) + conjg(crt(n,m) &
                               * rnkb_loc(m,nn,nkp_loc) ) ) &
                               * cmplx(0.0_dp,-0.5_dp,kind=dp)
                          if (sel_loc_constrain) then
