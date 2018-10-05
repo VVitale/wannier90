@@ -46,15 +46,15 @@ module w90_parameters
   !! Number of steps before writing checkpoint
   integer,           public, save :: num_print_cycles
   !! Number of steps between writing output
-  integer,           public, save :: sel_loc_num
+  integer,           public, save :: slwf_num
   !! Number of objective Wannier functions (others excluded from spread functional)
   logical,           public, save :: selective_loc
   !! Selective localization
-  logical,           public, save :: sel_loc_constrain
+  logical,           public, save :: slwf_constrain
   !! Constrained centres
   real(kind=dp), allocatable, public, save :: ccentres_frac(:,:)
   real(kind=dp), allocatable, public, save :: ccentres_cart(:,:)
-  real(kind=dp),     public, save :: sel_loc_constrain_lambda
+  real(kind=dp),     public, save :: slwf_lambda
   !! Centre constraints for each Wannier function. Co-ordinates of centre constraint defaults
   !! to centre of trial orbital. Individual Lagrange multipliers, lambdas, default to global Lagrange multiplier.
   character(len=50), public, save :: devel_flag
@@ -65,6 +65,8 @@ module w90_parameters
   real(kind=dp)                   :: adpt_smr_fac
   real(kind=dp)                   :: adpt_smr_max
   real(kind=dp)                   :: smr_fixed_en_width
+  ! GP: added a flag to check if this is the first run of param_read in library mode or not
+  logical,                    public, save :: library_param_read_first_pass
   !IVO
   logical,                    public, save :: spin_moment
   real(kind=dp),              public, save :: spin_axis_polar
@@ -388,8 +390,8 @@ module w90_parameters
   real(kind=dp),     public, save :: cell_volume
   real(kind=dp),     public, save :: real_metric(3,3)
   real(kind=dp),     public, save :: recip_metric(3,3)
-  integer,           public, save :: bands_num_spec_points
-  character(len=1), allocatable,    public, save ::bands_label(:)
+  integer,           public, save :: bands_num_spec_points  
+  character(len=20), allocatable,    public, save ::bands_label(:)
   real(kind=dp), allocatable,    public, save ::bands_spec_points(:,:)
   real(kind=dp), allocatable,    public, save ::kpt_cart(:,:) !kpoints in cartesians
   logical,           public, save :: disentanglement
@@ -619,6 +621,7 @@ contains
     call param_get_range_vector('exclude_bands',found,num_exclude_bands,lcount=.true.)
     if(found) then
        if(num_exclude_bands<1) call io_error('Error: problem reading exclude_bands')
+       if (allocated(exclude_bands)) deallocate(exclude_bands)
        allocate(exclude_bands(num_exclude_bands),stat=ierr)
        if (ierr/=0) call io_error('Error allocating exclude_bands in param_read')
        call param_get_range_vector('exclude_bands',found,num_exclude_bands,.false.,exclude_bands)
@@ -634,15 +637,15 @@ contains
        if(found) num_bands=i_temp
        if(.not.found) num_bands=num_wann
     end if
-    ! RM_2018-03-21: this should only be done once, but param_read is called both in wannier_setup and wannier_run
-    ! RM_2018-03-21: commented line below, as now the correct value for
-    ! num_bands (already substracted) is set in library mode before calling
-    ! param_read
-!    if (library) num_bands = num_bands - num_exclude_bands
+    ! GP: I subtract it here, but only the first time when I pass the total number of bands
+    ! In later calls, I need to pass instead num_bands already subtracted.
+    if (library .and. library_param_read_first_pass) num_bands = num_bands - num_exclude_bands
     if (.not. effective_model) then
-       if(found .and. num_bands<num_wann) then
-          call io_error('Error: num_bands must be greater than or equal to num_wann')
-       endif
+      if(found .and. num_bands<num_wann) then
+        write(stdout, *) 'num_bands', num_bands
+        write(stdout, *) 'num_wann', num_wann
+        call io_error('Error: num_bands must be greater than or equal to num_wann')
+      endif
     endif
 
     num_dump_cycles =   100          ! frequency to write backups at
@@ -801,19 +804,19 @@ contains
     precond=.false.
     call param_get_keyword('precond',found,l_value=precond)
 
-    sel_loc_num=num_wann
+    slwf_num=num_wann
     selective_loc = .false.
-    call param_get_keyword('sel_loc_num',found,i_value=sel_loc_num)
+    call param_get_keyword('slwf_num',found,i_value=slwf_num)
     if (found) then
-       if (sel_loc_num .gt. num_wann .or. sel_loc_num .lt. 1) then
-          call io_error('Error: sel_loc_num must be an between 1 and num_wann')
+       if (slwf_num .gt. num_wann .or. slwf_num .lt. 1) then
+          call io_error('Error: slwf_num must be an between 1 and num_wann')
        end if
-       if (sel_loc_num .lt. num_wann) selective_loc = .true.
+       if (slwf_num .lt. num_wann) selective_loc = .true.
     end if
 
-    sel_loc_constrain=.false.
-    call param_get_keyword('sel_loc_constrain',found,l_value=sel_loc_constrain)
-    if(found .and. sel_loc_constrain) then
+    slwf_constrain=.false.
+    call param_get_keyword('slwf_constrain',found,l_value=slwf_constrain)
+    if(found .and. slwf_constrain) then
        allocate( ccentres_frac(num_wann,3),stat=ierr)
        if (ierr/=0) call io_error('Error allocating ccentres_frac in param_get_centre_constraints')
        allocate( ccentres_cart(num_wann,3),stat=ierr)
@@ -821,10 +824,10 @@ contains
     end if
 
 
-    sel_loc_constrain_lambda = 1.0_dp
-    call param_get_keyword('sel_loc_constrain_lambda',found,r_value=sel_loc_constrain_lambda)
+    slwf_lambda = 1.0_dp
+    call param_get_keyword('slwf_lambda',found,r_value=slwf_lambda)
     if (found) then
-       if (sel_loc_constrain_lambda < 0.0_dp) call io_error('Error: sel_loc_constrain_lambda  must be positive.')
+       if (slwf_lambda < 0.0_dp) call io_error('Error: slwf_lambda  must be positive.')
     endif
 
     !%%%%%%%%%
@@ -869,6 +872,7 @@ contains
     call param_get_range_vector('wannier_plot_list',found,num_wannier_plot,lcount=.true.)
     if(found) then
        if(num_wannier_plot<1) call io_error('Error: problem reading wannier_plot_list')
+       if (allocated(wannier_plot_list)) deallocate(wannier_plot_list)
        allocate(wannier_plot_list(num_wannier_plot),stat=ierr)
        if (ierr/=0) call io_error('Error allocating wannier_plot_list in param_read')
        call param_get_range_vector('wannier_plot_list',found,num_wannier_plot,.false.,wannier_plot_list)
@@ -877,6 +881,7 @@ contains
     else
        ! we plot all wannier functions
        num_wannier_plot=num_wann
+       if (allocated(wannier_plot_list)) deallocate(wannier_plot_list)
        allocate(wannier_plot_list(num_wannier_plot),stat=ierr)
        if (ierr/=0) call io_error('Error allocating wannier_plot_list in param_read')
        do loop=1,num_wann
@@ -928,6 +933,7 @@ contains
     call param_get_range_vector('bands_plot_project',found,num_bands_project,lcount=.true.)
     if(found) then
        if(num_bands_project<1) call io_error('Error: problem reading bands_plot_project')
+       if (allocated(bands_plot_project)) deallocate(bands_plot_project)
        allocate(bands_plot_project(num_bands_project),stat=ierr)
        if (ierr/=0) call io_error('Error allocating bands_plot_project in param_read')
        call param_get_range_vector('bands_plot_project',found,num_bands_project,.false.,bands_plot_project)
@@ -939,8 +945,10 @@ contains
     call param_get_block_length('kpoint_path',found,i_temp)
     if (found) then
        bands_num_spec_points=i_temp*2
+       if (allocated(bands_label)) deallocate(bands_label)
        allocate(bands_label(bands_num_spec_points),stat=ierr)
        if (ierr/=0) call io_error('Error allocating bands_label in param_read')
+       if (allocated(bands_spec_points)) deallocate(bands_spec_points)
        allocate(bands_spec_points(3,bands_num_spec_points),stat=ierr)
        if (ierr/=0) call io_error('Error allocating bands_spec_points in param_read')
        call param_get_keyword_kpath
@@ -995,6 +1003,7 @@ contains
     endif
     !
     if(found_fermi_energy) then
+       if (allocated(fermi_energy_list)) deallocate(fermi_energy_list)
        allocate(fermi_energy_list(1),stat=ierr)
        fermi_energy_list(1)=fermi_energy
     elseif(fermi_energy_scan) then
@@ -1003,6 +1012,7 @@ contains
        else
           fermi_energy_step=(fermi_energy_max-fermi_energy_min)/real(nfermi-1,dp)
        endif
+       if (allocated(fermi_energy_list)) deallocate(fermi_energy_list)
        allocate(fermi_energy_list(nfermi),stat=ierr)
        do i=1,nfermi
           fermi_energy_list(i)=fermi_energy_min+(i-1)*fermi_energy_step
@@ -1016,6 +1026,7 @@ contains
 !! AAM_2017-03-27: if nfermi is zero (ie, fermi_energy* parameters are not set in input file)
 !! then allocate fermi_energy_list with length 1 and set to zero as default.
     else
+       if (allocated(fermi_energy_list)) deallocate(fermi_energy_list)
        allocate(fermi_energy_list(1),stat=ierr)
        fermi_energy_list(1)=0.0_dp
     endif
@@ -1160,14 +1171,16 @@ contains
     call param_get_range_vector('gyrotropic_band_list',found,gyrotropic_num_bands,lcount=.true.)
     if(found) then
        if(gyrotropic_num_bands<1) call io_error('Error: problem reading gyrotropic_band_list')
+       if (allocated(gyrotropic_band_list)) deallocate(gyrotropic_band_list)
        allocate(gyrotropic_band_list(gyrotropic_num_bands),stat=ierr)
        if (ierr/=0) call io_error('Error allocating gyrotropic_band_list in param_read')
        call param_get_range_vector('gyrotropic_band_list',found,gyrotropic_num_bands,.false.,gyrotropic_band_list)
        if (any(gyrotropic_band_list<1) .or. any(gyrotropic_band_list>num_wann) ) &
             call io_error('Error: gyrotropic_band_list asks for a non-valid bands')
     else
-       ! include all  bands in the calculation
+       ! include all bands in the calculation
        gyrotropic_num_bands=num_wann
+       if (allocated(gyrotropic_band_list)) deallocate(gyrotropic_band_list)
        allocate(gyrotropic_band_list(gyrotropic_num_bands),stat=ierr)
        if (ierr/=0) call io_error('Error allocating gyrotropic_band_list in param_read')
        do loop=1,num_wann
@@ -1370,6 +1383,7 @@ contains
          lcount=.true.)
     if(found) then
        if(num_dos_project<1) call io_error('Error: problem reading dos_project')
+       if (allocated(dos_project)) deallocate(dos_project)
        allocate(dos_project(num_dos_project),stat=ierr)
        if (ierr/=0) call io_error('Error allocating dos_project in param_read')
        call param_get_range_vector('dos_project',found,num_dos_project,&
@@ -1379,7 +1393,8 @@ contains
     else
        ! by default plot all
        num_dos_project=num_wann
-       allocate(dos_project(num_dos_project),stat=ierr)
+       if (allocated(dos_project)) deallocate(dos_project)
+       allocate(dos_project(num_dos_project),stat=ierr) 
        if (ierr/=0) call io_error('Error allocating dos_project in param_read')
        do i=1,num_dos_project
           dos_project(i)=i
@@ -1946,12 +1961,14 @@ contains
     if(found) then
        if(num_shells<0 .or. num_shells>max_shells) &
             call io_error('Error: number of shell in shell_list must be between zero and six')
+       if (allocated(shell_list)) deallocate(shell_list)
        allocate(shell_list(num_shells),stat=ierr)
        if (ierr/=0) call io_error('Error allocating shell_list in param_read')
        call param_get_range_vector('shell_list',found,num_shells,.false.,shell_list)
        if (any(shell_list<1)  ) &
             call io_error('Error: shell_list must contain positive numbers')
     else
+       if (allocated(shell_list)) deallocate(shell_list)
        allocate( shell_list(max_shells),stat=ierr)
        if (ierr/=0) call io_error('Error allocating shell_list in param_read')
     end if
@@ -2043,6 +2060,7 @@ contains
        if (modulo(rows, num_kpts) /= 0) then
           call io_error('The number of rows in nnkpts must be a multiple of num_kpts')
        end if
+       if (allocated(nnkpts_block)) deallocate(nnkpts_block)
        allocate(nnkpts_block(5, rows), stat=ierr)
        if (ierr /= 0) call io_error('Error allocating nnkpts_block in param_read')
        call param_get_keyword_block('nnkpts', found, rows, 5, i_value=nnkpts_block)
@@ -2051,13 +2069,16 @@ contains
             call io_error('Input parameter nnkpts_block is allowed only if postproc_setup = .true.')
        ! assign the values in nnkpts_block to nnlist and nncell
        ! this keeps track of how many neighbours have been seen for each k-point
+       if (allocated(nnkpts_idx)) deallocate(nnkpts_idx)     
        allocate(nnkpts_idx(num_kpts), stat=ierr)
        if (ierr /= 0) call io_error('Error allocating nnkpts_idx in param_read')
        nnkpts_idx = 1
        ! allocating "global" nnlist & nncell
        ! These are deallocated in kmesh_dealloc
+       if (allocated(nnlist)) deallocate(nnlist)     
        allocate(nnlist(num_kpts, nntot), stat=ierr)
        if (ierr /= 0) call io_error('Error allocating nnlist in param_read')
+       if (allocated(nncell)) deallocate(nncell)     
        allocate(nncell(3, num_kpts, nntot), stat=ierr)
        if (ierr /= 0) call io_error('Error allocating nncell in param_read')
        do i=1,num_kpts * nntot
@@ -2175,18 +2196,18 @@ contains
        ! Constrain centres
     end if
 
-    call param_get_block_length('constraints',found,i_temp)
+    call param_get_block_length('slwf_centres',found,i_temp)
     if (found) then
-       if( selective_loc .and. sel_loc_constrain .and. allocated(proj_site)) then
+       if( selective_loc .and. slwf_constrain .and. allocated(proj_site)) then
           ! Centre constraints block
           call param_get_centre_constraints
        else
-          call io_error('Error: found <centre_constraints> in input file and either no sel_loc_num, &
-               & or sel_loc_constrain=true or a projection_block.')
+          call io_error('Error: found <slwf_centres> in input file and either no slwf_num, &
+               & or slwf_constrain=true or a projection_block.')
        end if
     else
-       if( selective_loc .and. sel_loc_constrain .and. allocated(proj_site)) &
-          write(stdout, '(a)') ' No centre_constraints block. Desired centres are the same as projection centres'
+       if( selective_loc .and. slwf_constrain .and. allocated(proj_site)) &
+          write(stdout, '(a)') ' No slwf_centres block. Desired centres are the same as projection centres'
     end if
 
 
@@ -2222,9 +2243,11 @@ contains
 
 !    if (restart.ne.' ') disentanglement=.false.
 
-    if (disentanglement) then
+    if (disentanglement) then 
+       if (allocated(ndimwin)) deallocate(ndimwin)     
        allocate(ndimwin(num_kpts),stat=ierr)
        if (ierr/=0) call io_error('Error allocating ndimwin in param_read')
+       if (allocated(lwindow)) deallocate(lwindow)     
        allocate(lwindow(num_bands,num_kpts),stat=ierr)
        if (ierr/=0) call io_error('Error allocating lwindow in param_read')
     endif
@@ -2244,9 +2267,11 @@ contains
     omega_invariant = -999.0_dp
     have_disentangled = .false.
 
+    if (allocated(wannier_centres)) deallocate(wannier_centres)   
     allocate(wannier_centres(3,num_wann),stat=ierr)
     if (ierr/=0) call io_error('Error allocating wannier_centres in param_read')
     wannier_centres=0.0_dp
+    if (allocated(wannier_spreads)) deallocate(wannier_spreads)   
     allocate(wannier_spreads(num_wann),stat=ierr)
     if (ierr/=0) call io_error('Error in allocating wannier_spreads in param_read')
     wannier_spreads=0.0_dp
@@ -2462,7 +2487,7 @@ contains
 
     implicit none
 
-    integer :: nsp,ic,loop
+    integer :: nsp,ic,loop,inner_loop
 
     ! Atom labels (eg, si --> Si)
     do nsp=1,num_species
@@ -2480,9 +2505,11 @@ contains
 
     ! Bands labels (eg, x --> X)
     do loop=1,bands_num_spec_points
-       ic=ichar(bands_label(loop))
+      do inner_loop=1, len(bands_label(loop))
+       ic=ichar(bands_label(loop)(inner_loop:inner_loop))
        if ((ic.ge.ichar('a')).and.(ic.le.ichar('z'))) &
-            bands_label(loop) = char(ic+ichar('Z')-ichar('z'))
+            bands_label(loop)(inner_loop:inner_loop) = char(ic+ichar('Z')-ichar('z'))
+      enddo
     enddo
 
     ! Length unit (ang --> Ang, bohr --> Bohr)
@@ -2562,12 +2589,12 @@ contains
        write(stdout,'(25x,a)') 'No atom positions specified'
     end if
     ! Constrained centres
-    if (selective_loc .and. sel_loc_constrain) then
+    if (selective_loc .and. slwf_constrain) then
        write(stdout,*) ' '
        write(stdout,'(1x,a)') '*----------------------------------------------------------------------------*'
        write(stdout,'(1x,a)') '| Wannier#        Original Centres              Constrained centres          |'
        write(stdout,'(1x,a)') '+----------------------------------------------------------------------------+'
-       do i=1,sel_loc_num
+       do i=1,slwf_num
           write(stdout,'(1x,a1,2x,i3,2x,3F10.5,3x,a1,1x,3F10.5,4x,a1)') &
 &                    '|',i,ccentres_frac(i,:),'|',wannier_centres(:,i),'|'
        end do
@@ -2619,7 +2646,7 @@ contains
     write(stdout,*) ' '
     write(stdout,'(1x,a78)') '*---------------------------------- MAIN ------------------------------------*'
     write(stdout,'(1x,a46,10x,I8,13x,a1)') '|  Number of Wannier Functions               :',num_wann,'|'
-    write(stdout,'(1x,a46,10x,I8,13x,a1)') '|  Number of Objective Wannier Functions     :',sel_loc_num,'|'
+    write(stdout,'(1x,a46,10x,I8,13x,a1)') '|  Number of Objective Wannier Functions     :',slwf_num,'|'
     write(stdout,'(1x,a46,10x,I8,13x,a1)') '|  Number of input Bloch states              :',num_bands,'|'
     write(stdout,'(1x,a46,10x,I8,13x,a1)') '|  Output verbosity (1=low, 5=high)          :',iprint,'|'
     write(stdout,'(1x,a46,10x,I8,13x,a1)') '|  Timing Level (1=low, 5=high)              :',timing_level,'|'
@@ -2675,10 +2702,10 @@ contains
     if(selective_loc .or. iprint>2) then
     write(stdout,'(1x,a46,10x,L8,13x,a1)')   '|  Perform selective localization            :',selective_loc,'|'
     end if
-    if(sel_loc_constrain .or. iprint>2) then
-    write(stdout,'(1x,a46,10x,L8,13x,a1)')   '|  Use constrains in selective localization  :',sel_loc_constrain,'|'
+    if(slwf_constrain .or. iprint>2) then
+    write(stdout,'(1x,a46,10x,L8,13x,a1)')   '|  Use constrains in selective localization  :',slwf_constrain,'|'
     write(stdout,'(1x,a46,8x,E10.3,13x,a1)') '|  Value of the Lagrange multiplier          :',&
-         &sel_loc_constrain_lambda,'|' 
+         &slwf_lambda,'|' 
     end if
     write(stdout,'(1x,a78)') '*----------------------------------------------------------------------------*'
     !
@@ -2768,7 +2795,7 @@ contains
              write(stdout,'(1x,a78)') '|     None defined                                                           |'
           else
              do loop=1,bands_num_spec_points,2
-                write(stdout,'(1x,a10,2x,a1,2x,3F7.3,5x,a3,2x,a1,2x,3F7.3,7x,a1)') '|    From:',bands_label(loop),&
+                write(stdout,'(1x,a10,1x,a5,1x,3F7.3,5x,a3,1x,a5,1x,3F7.3,3x,a1)') '|    From:',bands_label(loop),&
                      (bands_spec_points(i,loop),i=1,3),'To:',bands_label(loop+1),(bands_spec_points(i,loop+1),i=1,3),'|'
              end do
           end if
@@ -4847,11 +4874,11 @@ contains
        if (constraint_num > 0) then
          if (trim(dummy) == '') cycle
          index1 = index(dummy, 'begin')
-         if (index1 > 0) call io_error("centre_constraints block hasn't ended yet")
+         if (index1 > 0) call io_error("slwf_centres block hasn't ended yet")
          index1 = index(dummy, 'end')
          if (index1 > 0) then
-           index1 = index(dummy, 'centre_constraints')
-           if (index1 == 0) call io_error('Wrong ending of block (need to end centre_constraints)')
+           index1 = index(dummy, 'slwf_centres')
+           if (index1 == 0) call io_error('Wrong ending of block (need to end slwf_centres)')
            in_data(loop1)(1:maxlen) = ' '
            exit
          end if
@@ -4880,7 +4907,7 @@ contains
          in_data(loop1)(1:maxlen) = ' '
          constraint_num = constraint_num + 1
        end if
-       index1 = index(dummy, 'centre_constraints')
+       index1 = index(dummy, 'slwf_centres')
        if (index1 > 0) then
           index1 = index(dummy, 'begin')
           if (index1 > 0) then
@@ -6156,11 +6183,11 @@ contains
     call comms_bcast(scdm_entanglement,1)
 
     !vv: Constrained centres
-    call comms_bcast(sel_loc_num,1)
-    call comms_bcast(sel_loc_constrain,1)
-    call comms_bcast(sel_loc_constrain_lambda,1)
+    call comms_bcast(slwf_num,1)
+    call comms_bcast(slwf_constrain,1)
+    call comms_bcast(slwf_lambda,1)
     call comms_bcast(selective_loc,1)
-    if (selective_loc .and. sel_loc_constrain) then
+    if (selective_loc .and. slwf_constrain) then
        if(.not.on_root) then
           allocate( ccentres_frac(num_wann,3),stat=ierr)
           if (ierr/=0) call io_error('Error allocating ccentres_frac in param_get_centre_constraints')
